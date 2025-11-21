@@ -69,7 +69,7 @@ const getModel = (): GenerativeModel => {
         
         const genAI = new GoogleGenerativeAI(apiKey);
         modelInstance = genAI.getGenerativeModel({ 
-            model: "gemini-2.5-flash-lite",
+            model: "gemini-2.5-flash",
             tools: tools
         });
     }
@@ -162,7 +162,31 @@ export const processUserRequest = async (userMessage: string, rawHistory: any[])
                     
                     let items: GridItem[] = [];
                     if (args.queryType === 'restaurants') items = await repo.getRestaurants();
-                    else if (args.queryType === 'dishes' && args.parentId) items = await repo.getDishes(args.parentId);
+                    else if (args.queryType === 'dishes' && args.parentId){
+                        let targetId = args.parentId; // La IA enviará "La sazón del Perú" o el ID inventado
+
+                        // 1. Obtenemos TODOS los restaurantes para buscar el correcto
+                        // (Como repo.getRestaurants() suele ser rápido/cacheado, esto es seguro)
+                        const allRestaurants = await repo.getRestaurants();
+
+                        // 2. Buscamos coincidencia por Nombre o por ID
+                        const foundRestaurant = allRestaurants.find(r => 
+                            // Coincidencia exacta de nombre (normalizando minúsculas si quieres)
+                            r.title.toLowerCase() === targetId?.toLowerCase() || 
+                            r.id === targetId
+                        );
+
+                        if (foundRestaurant) {
+                            console.log(`✅ Restaurante encontrado por nombre: ${foundRestaurant.title} -> ID: ${foundRestaurant.id}`);
+                            items = await repo.getDishes(foundRestaurant.id); // Usamos el ID real de la DB
+                            uiData = { phase: args.queryType, items: items };
+                            functionResult = { result: items };
+                        } else {
+                            // Si no lo encontramos, avisamos a la IA
+                            console.warn(`❌ No se encontró restaurante: ${targetId}`);
+                            functionResult = { error: `No encontré un restaurante llamado "${targetId}". Pide al usuario que seleccione uno de la lista.` };
+                        }
+                    } 
                     
                     // Asignamos a uiData para enviar al frontend
                     uiData = { phase: args.queryType, items: items };
