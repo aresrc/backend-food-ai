@@ -1,119 +1,51 @@
 import { GridItem } from "../types";
 
-/* ==============================================================================
-  SECCIÓN FIREBASE (COMENTADA)
-  Descomenta y configura esto cuando tengas tus credenciales de servicio.
-==============================================================================
-*/
-
-// import * as admin from 'firebase-admin';
-// import { getFirestore } from 'firebase-admin/firestore';
-
-// // Asegúrate de tener tu serviceAccountKey.json
-// // admin.initializeApp({
-// //   credential: admin.credential.cert(require('../../serviceAccountKey.json'))
-// // });
-
-// const db = getFirestore();
-// const CACHE_TTL = 60 * 1000; // 1 minuto de caché simple si quisieras
-
-
-
-// --- DATOS ESTÁTICOS (FALLBACK ACTUAL) ---
-
+// --- DATOS ESTÁTICOS ---
 const DATABASE = {
   restaurants: [
     { id: 'r1', title: 'La Trattoria Romana', subtitle: 'Italiana • ⭐ 4.8', imageSeed: 'italian-building', type: 'restaurant' },
     { id: 'r2', title: 'Sushi Zen Master', subtitle: 'Japonesa • ⭐ 4.9', imageSeed: 'sushi-chef', type: 'restaurant' },
     { id: 'r3', title: 'El Fuego Grill', subtitle: 'Carnes • ⭐ 4.7', imageSeed: 'grill-fire', type: 'restaurant' },
     { id: 'r4', title: 'Green Bowl Vida', subtitle: 'Vegana • ⭐ 4.6', imageSeed: 'green-salad', type: 'restaurant' }
-  ] as GridItem[],
-  
-  categories: {
-    'r1': [
-      { id: 'c_r1_1', title: 'Pastas Caseras', subtitle: 'Hechas a mano', imageSeed: 'pasta-plate', type: 'category' },
-      { id: 'c_r1_2', title: 'Pizzas Artesanales', subtitle: 'Horno de leña', imageSeed: 'pizza-oven', type: 'category' },
-    ],
-    'r2': [
-        { id: 'c_r2_1', title: 'Rolls Especiales', subtitle: 'Fusión única', imageSeed: 'sushi-roll', type: 'category' },
-    ]
-    // ... puedes agregar más estáticos si quieres probar
-  } as Record<string, GridItem[]>
+  ] as GridItem[]
 };
 
-
-// --- FUNCIONES DEL REPOSITORIO ---
-
 export const getRestaurants = async (): Promise<GridItem[]> => {
-    console.log("🔍 Buscando Restaurantes...");
-
-    /* // --- IMPLEMENTACIÓN FIREBASE ---
-    try {
-        const snapshot = await db.collection('restaurants').get();
-        if (snapshot.empty) return [];
-        
-        return snapshot.docs.map(doc => ({
-            id: doc.id,
-            title: doc.data().name,       // Asegúrate que coincida con tu DB
-            subtitle: doc.data().rating + ' • ' + doc.data().cuisine,
-            imageSeed: doc.data().imageName,
-            type: 'restaurant'
-        })) as GridItem[];
-    } catch (error) {
-        console.error("Firebase Error:", error);
-        return DATABASE.restaurants; // Fallback a estático en caso de error
-    }
-    */
-
-    // Retorno Estático
+    console.log("🔍 Repo: Buscando Restaurantes...");
     return DATABASE.restaurants;
 };
 
-export const getCategories = async (restaurantId: string): Promise<GridItem[]> => {
-    console.log(`🔍 Buscando Categorías para: ${restaurantId}`);
+export const getDishes = async (restaurantId: string): Promise<GridItem[]> => {
+    console.log(`🔍 Repo: Buscando Platos para Restaurante: ${restaurantId}`);
 
-    /* // --- IMPLEMENTACIÓN FIREBASE ---
-    try {
-        // Asumiendo estructura: collection('restaurants') -> doc -> collection('categories')
-        const snapshot = await db.collection('restaurants').doc(restaurantId).collection('categories').get();
-        
-        return snapshot.docs.map(doc => ({
-            id: doc.id,
-            title: doc.data().title,
-            subtitle: doc.data().description,
-            imageSeed: doc.data().imageName,
-            type: 'category'
-        })) as GridItem[];
-    } catch (error) {
-        console.error("Firebase Error:", error);
-        return [];
+    if (restaurantId === 'r1') { // Italiana
+        return [
+            { id: `d_r1_1`, title: `Spaghetti Carbonara`, subtitle: '$18.00 • Clásico romano', imageSeed: `pasta-carbonara`, type: 'dish' },
+            { id: `d_r1_2`, title: `Pizza Margarita`, subtitle: '$15.00 • Horno de leña', imageSeed: `pizza-margherita`, type: 'dish' },
+            { id: `d_r1_3`, title: `Lasagna de Carne`, subtitle: '$20.00 • Receta de la abuela', imageSeed: `lasagna`, type: 'dish' },
+            { id: `d_r1_4`, title: `Tiramisu`, subtitle: '$10.00 • Postre casero', imageSeed: `tiramisu`, type: 'dish' },
+        ];
     }
-    */
+    
+    if (restaurantId === 'r2') { // Japonesa - AMBIENTE EXTENDIDO PARA DEMO
+        return [
+            // Primer grupo (para la primera mención)
+            { id: `d_r2_1`, title: `Dragon Roll`, subtitle: '$18.00 • Anguila y aguacate', imageSeed: `sushi-roll`, type: 'dish' },
+            { id: `d_r2_2`, title: `Sashimi Mix`, subtitle: '$22.00 • Salmón y Atún fresco', imageSeed: `sashimi`, type: 'dish' },
+            { id: `d_r2_3`, title: `Ramen Tonkotsu`, subtitle: '$16.00 • Caldo de 12 horas', imageSeed: `ramen`, type: 'dish' },
+            { id: `d_r2_4`, title: `Gyozas`, subtitle: '$8.00 • Entrada (6 pz)', imageSeed: `gyoza`, type: 'dish' },
+            // Segundo grupo (para el "¿Qué más hay?")
+            { id: `d_r2_5`, title: `Ebi Tempura`, subtitle: '$14.00 • Langostinos fritos', imageSeed: `tempura`, type: 'dish' },
+            { id: `d_r2_6`, title: `Miso Soup`, subtitle: '$5.00 • Sopa tradicional', imageSeed: `miso`, type: 'dish' },
+            { id: `d_r2_7`, title: `Nigiri de Salmón`, subtitle: '$10.00 • 2 piezas', imageSeed: `nigiri`, type: 'dish' },
+            { id: `d_r2_8`, title: `Yakitori`, subtitle: '$12.00 • Brochetas de pollo', imageSeed: `yakitori`, type: 'dish' },
+        ];
+    }
 
-    return DATABASE.categories[restaurantId] || [];
-};
-
-export const getDishes = async (categoryId: string): Promise<GridItem[]> => {
-    console.log(`🔍 Generando/Buscando Platos para: ${categoryId}`);
-
-    /* // --- IMPLEMENTACIÓN FIREBASE ---
-    // Podrías hacer una query simple buscando por campo categoryId si no usas subcolecciones profundas
-    try {
-        const snapshot = await db.collection('dishes').where('categoryId', '==', categoryId).get();
-        return snapshot.docs.map(doc => ({
-            id: doc.id,
-            title: doc.data().name,
-            subtitle: `$${doc.data().price}`,
-            imageSeed: doc.data().imageName,
-            type: 'dish'
-        })) as GridItem[];
-    } catch (e) { return [] }
-    */
-
-    // Lógica estática determinista (para demo)
+    // Fallback
     return [
-        { id: `d_${categoryId}_1`, title: `Especialidad Chef`, subtitle: '$18.00', imageSeed: `dish-${categoryId}-1`, type: 'dish' },
-        { id: `d_${categoryId}_2`, title: `Opción Clásica`, subtitle: '$14.50', imageSeed: `dish-${categoryId}-2`, type: 'dish' },
-        { id: `d_${categoryId}_3`, title: `Opción Ligera`, subtitle: '$12.00', imageSeed: `dish-${categoryId}-3`, type: 'dish' },
+        { id: `d_${restaurantId}_1`, title: `Especialidad de la Casa`, subtitle: '$18.00 • Recomendado', imageSeed: `dish-${restaurantId}-1`, type: 'dish' },
+        { id: `d_${restaurantId}_2`, title: `Menú Ejecutivo`, subtitle: '$14.50 • Incluye bebida', imageSeed: `dish-${restaurantId}-2`, type: 'dish' },
+        { id: `d_${restaurantId}_3`, title: `Opción Ligera`, subtitle: '$12.00 • Bajo en calorías', imageSeed: `dish-${restaurantId}-3`, type: 'dish' },
     ];
 };

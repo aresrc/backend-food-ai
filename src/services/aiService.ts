@@ -3,49 +3,69 @@ import * as repo from "../data/menuRepository";
 import { ChatResponse, GridItem } from "../types";
 
 interface GetMenuDataArgs {
-    queryType: "restaurants" | "categories" | "dishes";
+    queryType: "restaurants" | "dishes";
     parentId?: string;
 }
 
-// Definición de herramientas para la IA
+interface AddToOrderArgs {
+    dishName: string;
+    quantity: number;
+    observation?: string;
+}
+
+interface CompleteOrderArgs {
+    finalMessage: string;
+}
+
 const tools: FunctionDeclarationsTool[] = [
   {
     functionDeclarations: [
       {
         name: "getMenuData",
-        description: "Obtiene la lista de restaurantes, categorías o platillos disponibles.",
+        description: "Obtiene datos del menú. Úsalo para mostrar restaurantes o platos.",
         parameters: {
           type: SchemaType.OBJECT,
           properties: {
-            queryType: { 
-                type: SchemaType.STRING, 
-                enum: ["restaurants", "categories", "dishes"],
-                format: "enum",
-                description: "El tipo de información que el usuario busca."
-            },
-            parentId: { 
-                type: SchemaType.STRING,
-                description: "El ID del padre (ID del restaurante para buscar categorías, ID de categoría para platos)."
-            }
+            queryType: { type: SchemaType.STRING, format: "enum", enum: ["restaurants", "dishes"] },
+            parentId: { type: SchemaType.STRING, description: "ID del restaurante (requerido para dishes)" }
           },
           required: ["queryType"]
+        }
+      },
+      {
+        name: "addToOrder",
+        description: "Agrega un item al pedido o incrementa su cantidad.",
+        parameters: {
+          type: SchemaType.OBJECT,
+          properties: {
+            dishName: { type: SchemaType.STRING },
+            quantity: { type: SchemaType.NUMBER },
+            observation: { type: SchemaType.STRING }
+          },
+          required: ["dishName"]
+        }
+      },
+      {
+        name: "completeOrder",
+        description: "Finaliza la interacción y muestra el resumen del pedido (pantalla final).",
+        parameters: {
+          type: SchemaType.OBJECT,
+          properties: {
+            finalMessage: { type: SchemaType.STRING }
+          },
+          required: ["finalMessage"]
         }
       }
     ]
   }
 ];
 
-// --- CORRECCIÓN: INICIALIZACIÓN PEREZOSA (LAZY) ---
-// No inicializamos 'genAI' aquí arriba para evitar problemas con dotenv.
 let modelInstance: GenerativeModel | null = null;
 
 const getModel = (): GenerativeModel => {
-    // Solo inicializamos si aún no existe la instancia
     if (!modelInstance) {
         const apiKey = process.env.GEMINI_API_KEY;
-        if (!apiKey) {
-            throw new Error("❌ CRITICAL ERROR: GEMINI_API_KEY no encontrada. Asegúrate de tener el archivo .env en la raíz y que contenga la clave.");
-        }
+        if (!apiKey) throw new Error("❌ GEMINI_API_KEY no encontrada.");
         
         const genAI = new GoogleGenerativeAI(apiKey);
         modelInstance = genAI.getGenerativeModel({ 
@@ -56,87 +76,127 @@ const getModel = (): GenerativeModel => {
     return modelInstance;
 };
 
-export const processUserRequest = async (userMessage: string, rawHistory: any[]): Promise<ChatResponse> => {
+// --- PROMPT MAESTRO: FLUJO "PROCESO COMÚN" ---
+const SYSTEM_INSTRUCTION_TEXT = `
+ROL: Eres "ServyApp", un asistente de camarero digital eficiente y amable.
 
-    // Obtenemos el modelo (ahora es seguro porque dotenv ya corrió en index.ts)
+OBJETIVO: Guiar al usuario por este flujo exacto:
+1. Seleccionar Restaurante.
+2. Explorar Platos (Verbalizar pocos a la vez).
+3. Añadir al pedido (Confirmar y seguir mostrando el menú).
+4. Finalizar (Mostrar resumen y dar instrucciones QR).
+
+REGLAS DE COMPORTAMIENTO (Script):
+
+A. AL INICIAR / SALUDAR:
+   - Llama a \`getMenuData(queryType="restaurants")\`.
+   - Di: "Hola, te presento los siguientes restaurantes disponibles."
+
+B. AL SELECCIONAR RESTAURANTE (ej. "Qué hay en Sushi Zen?"):
+   - Llama a \`getMenuData(queryType="dishes", parentId="ID_DETECTADO")\`.
+   - MUESTRA visualmente todos los platos.
+   - VERBALMENTE: "Claro, en [Nombre] hay platillos como [Nombra SOLO 4 platos] y otros más. ¿Le gustaría pedir alguno?"
+
+C. SI EL USUARIO PREGUNTA "¿QUÉ MÁS HAY?":
+   - NO llames a la herramienta de nuevo (ya tienes los datos).
+   - VERBALMENTE: "Hay estos otros platos en [Nombre]: [Nombra 3 o 4 platos QUE NO HAYAS DICHO ANTES]."
+
+D. AL PEDIR UN PLATO (ej. "Deseo un Ramen"):
+   - Llama a \`addToOrder(dishName="Ramen", quantity=1)\`.
+   - Si el usuario dice "dame dos más", calcula la cantidad total o suma.
+   - ESTADO VISUAL: Debes volver a llamar a \`getMenuData("dishes")\` (o mantener el estado visual de los platos) para que el usuario pueda pedir más cosas. NO muestres el resumen final todavía.
+   - VERBALMENTE: "Genial, lo he añadido a tu pedido. ¿Deseas algo más?"
+
+E. AL FINALIZAR (ej. "Eso sería todo"):
+   - Llama a \`completeOrder\`.
+   - VERBALMENTE: "Perfecto, he generado tu pedido. Ve a la sección de 'Mi Orden' para escanear el QR en el local."
+
+F. SI MODIFICA AL FINAL (ej. estando en el resumen dice "Agrega uno más"):
+   - Llama a \`addToOrder\`.
+   - Inmediatamente llama a \`completeOrder\` para refrescar el resumen visual.
+   - VERBALMENTE: "Perfecto, lo he agregado. Puede ir a la sección 'Mi Orden' para escanear el QR."
+
+NOTA: Nunca inventes platos. Usa estrictamente lo que devuelve \`getMenuData\`.
+`;
+
+export const processUserRequest = async (userMessage: string, rawHistory: any[]): Promise<ChatResponse> => {
     let model: GenerativeModel;
     try {
         model = getModel();
     } catch (e: any) {
-        console.error(e.message);
-        return { aiMessage: "Error de configuración del servidor (API Key faltante).", screenData: null };
+        return { aiMessage: "Error API Key.", screenData: null };
     }
 
-    // Transformar historial simple al formato de Gemini
     const formattedHistory: Content[] = rawHistory.map(item => {
         if (item.parts) return item;
-        return {
-            role: item.role,
-            parts: [{ text: item.text }]
-        };
+        return { role: item.role, parts: [{ text: item.text }] };
     });
 
     const chatSession = model.startChat({
         history: formattedHistory,
-        systemInstruction: { 
-            role: "system", 
-            parts: [{ text: `
-                Eres un camarero virtual energético y servicial.
-                Tu trabajo es ayudar al usuario a navegar el menú.
-                
-                REGLAS:
-                1. NO inventes platos ni restaurantes. Usa la herramienta 'getMenuData' para saber qué existe.
-                2. Si llamas a una herramienta, usa la información que te devuelve para responder al usuario.
-                3. Sé breve. El usuario te está escuchando en una app móvil.
-                4. Si el usuario saluda, responde amablemente y ofrece mostrar los restaurantes.
-            `}] 
-        }
+        systemInstruction: { role: "system", parts: [{ text: SYSTEM_INSTRUCTION_TEXT }] }
     });
 
     try {
         const result = await chatSession.sendMessage(userMessage);
         const response = result.response;
-        
         const candidates = response.candidates;
-        if (!candidates || candidates.length === 0) {
-             throw new Error("No se generaron candidatos de respuesta.");
-        }
+
+        if (!candidates || candidates.length === 0) throw new Error("No candidates");
 
         const toolCalls = candidates[0].content.parts.filter(part => !!part.functionCall);
 
         let uiData = null;
-        let finalAiText = "";
+        let finalAiText = response.text();
 
         if (toolCalls && toolCalls.length > 0) {
-            const call = toolCalls[0].functionCall;
+            // Manejamos llamadas múltiples (ej: addToOrder + getMenuData en la misma vuelta)
+            for (const part of toolCalls) {
+                const call = part.functionCall!;
+                let functionResult: any = { result: "ok" };
 
-            if (call && call.name === "getMenuData" && call.args) {
-                const { queryType, parentId } = call.args as unknown as GetMenuDataArgs;
-
-                console.log(`🤖 AI Tool Call: ${queryType}, parent: ${parentId}`);
-
-                let items: GridItem[] = [];
-                if (queryType === 'restaurants') items = await repo.getRestaurants();
-                else if (queryType === 'categories' && parentId) items = await repo.getCategories(parentId);
-                else if (queryType === 'dishes' && parentId) items = await repo.getDishes(parentId);
-
-                uiData = {
-                    phase: queryType,
-                    items: items
-                };
+                // 1. NAVEGACIÓN
+                if (call.name === "getMenuData") {
+                    const args = call.args as unknown as GetMenuDataArgs;
+                    console.log(`🤖 Nav: ${args.queryType}`);
+                    
+                    let items: GridItem[] = [];
+                    if (args.queryType === 'restaurants') items = await repo.getRestaurants();
+                    else if (args.queryType === 'dishes' && args.parentId) items = await repo.getDishes(args.parentId);
+                    
+                    // Asignamos a uiData para enviar al frontend
+                    uiData = { phase: args.queryType, items: items };
+                    functionResult = { result: items };
+                }
                 
+                // 2. PEDIDO
+                else if (call.name === "addToOrder") {
+                    const args = call.args as unknown as AddToOrderArgs;
+                    console.log(`🛒 Add: ${args.quantity}x ${args.dishName}`);
+                    // Aquí iría lógica de DB real
+                    uiData = { phase: 'summary', items: [] }; // Phase summary activa OrderSummary en frontend
+                    functionResult = { message: `Añadido ${args.quantity} ${args.dishName}` };
+                }
+
+                // 3. FINALIZAR
+                else if (call.name === "completeOrder") {
+                    console.log("🏁 Finalizando orden");
+                    uiData = { phase: 'summary', items: [] }; // Phase summary activa OrderSummary en frontend
+                    functionResult = { status: "Order finalized" };
+                }
+
+                // Enviamos la respuesta de la herramienta a la IA para que genere el texto final
                 const toolResponsePart: Part = {
                     functionResponse: {
-                        name: "getMenuData",
-                        response: { name: "getMenuData", content: { result: items } }
+                        name: call.name,
+                        response: { name: call.name, content: functionResult }
                     }
                 };
-
+                
+                // Solo enviamos mensaje a la IA si necesitamos texto (generalmente la última herramienta define el texto)
                 const functionResponse = await chatSession.sendMessage([toolResponsePart]);
                 finalAiText = functionResponse.response.text();
             }
-        } else {
-            finalAiText = response.text();
         }
 
         return {
@@ -145,10 +205,7 @@ export const processUserRequest = async (userMessage: string, rawHistory: any[])
         };
 
     } catch (error) {
-        console.error("Error en AI Service:", error);
-        return {
-            aiMessage: "Lo siento, tuve un problema técnico. ¿Podrías repetirlo?",
-            screenData: null
-        };
+        console.error("Error AI:", error);
+        return { aiMessage: "Hubo un error técnico. Intenta de nuevo.", screenData: null };
     }
 };
