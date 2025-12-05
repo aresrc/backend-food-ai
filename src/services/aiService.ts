@@ -1,154 +1,92 @@
-import { GoogleGenerativeAI, FunctionDeclarationsTool, Part, SchemaType, Content, GenerativeModel } from "@google/generative-ai";
-import * as repo from "../data/menuRepository";
-import { ChatResponse, GridItem } from "../types";
+// src/services/aiService.ts
+import { GoogleGenerativeAI, FunctionDeclarationsTool, Content, GenerativeModel } from "@google/generative-ai";
+import { ChatResponse } from "../types";
+import { mcpTools } from "../mcp/tools";
+import { zodToGeminiParameters } from "../utils/zodHelper"; // Necesitaremos un pequeño helper (ver abajo)
 
-interface GetMenuDataArgs {
-    queryType: "restaurants" | "categories" | "dishes";
-    parentId?: string;
-}
+// Convertimos nuestras herramientas MCP al formato de Google Gemini
+const googleTools: FunctionDeclarationsTool[] = [{
+    functionDeclarations: mcpTools.map(tool => ({
+        name: tool.name,
+        description: tool.description,
+        parameters: zodToGeminiParameters(tool.parameters) // Helper para convertir Zod a JSON Schema
+    }))
+}];
 
-// Definición de herramientas para la IA
-const tools: FunctionDeclarationsTool[] = [
-  {
-    functionDeclarations: [
-      {
-        name: "getMenuData",
-        description: "Obtiene la lista de restaurantes, categorías o platillos disponibles.",
-        parameters: {
-          type: SchemaType.OBJECT,
-          properties: {
-            queryType: { 
-                type: SchemaType.STRING, 
-                enum: ["restaurants", "categories", "dishes"],
-                format: "enum",
-                description: "El tipo de información que el usuario busca."
-            },
-            parentId: { 
-                type: SchemaType.STRING,
-                description: "El ID del padre (ID del restaurante para buscar categorías, ID de categoría para platos)."
-            }
-          },
-          required: ["queryType"]
-        }
-      }
-    ]
-  }
-];
+const SYSTEM_INSTRUCTION = `
+Eres el mesero virtual de ServyApp. Tu tono es amable, eficiente y breve.
+Usa SIEMPRE las herramientas proporcionadas para obtener información.
+No inventes platos ni precios.
+Si el usuario selecciona un restaurante, usa 'select_restaurant'.
+Si el usuario pide un plato, usa 'add_dish_to_cart'.
+Si el usuario quiere pagar o ver la cuenta, usa 'finalize_order'.
+`;
 
-// --- CORRECCIÓN: INICIALIZACIÓN PEREZOSA (LAZY) ---
-// No inicializamos 'genAI' aquí arriba para evitar problemas con dotenv.
 let modelInstance: GenerativeModel | null = null;
 
-const getModel = (): GenerativeModel => {
-    // Solo inicializamos si aún no existe la instancia
+const getModel = () => {
     if (!modelInstance) {
         const apiKey = process.env.GEMINI_API_KEY;
-        if (!apiKey) {
-            throw new Error("❌ CRITICAL ERROR: GEMINI_API_KEY no encontrada. Asegúrate de tener el archivo .env en la raíz y que contenga la clave.");
-        }
-        
+        if (!apiKey) throw new Error("API Key faltante");
         const genAI = new GoogleGenerativeAI(apiKey);
-        modelInstance = genAI.getGenerativeModel({ 
-            model: "gemini-2.5-flash-lite",
-            tools: tools
-        });
+        modelInstance = genAI.getGenerativeModel({ model: "gemini-2.5-flash", tools: googleTools });
     }
     return modelInstance;
 };
 
 export const processUserRequest = async (userMessage: string, rawHistory: any[]): Promise<ChatResponse> => {
+    const model = getModel();
+    
+    // Historial
+    const history: Content[] = rawHistory.map(h => ({
+        role: h.role,
+        parts: [{ text: h.text }]
+    }));
 
-    // Obtenemos el modelo (ahora es seguro porque dotenv ya corrió en index.ts)
-    let model: GenerativeModel;
-    try {
-        model = getModel();
-    } catch (e: any) {
-        console.error(e.message);
-        return { aiMessage: "Error de configuración del servidor (API Key faltante).", screenData: null };
-    }
-
-    // Transformar historial simple al formato de Gemini
-    const formattedHistory: Content[] = rawHistory.map(item => {
-        if (item.parts) return item;
-        return {
-            role: item.role,
-            parts: [{ text: item.text }]
-        };
-    });
-
-    const chatSession = model.startChat({
-        history: formattedHistory,
-        systemInstruction: { 
-            role: "system", 
-            parts: [{ text: `
-                Eres un camarero virtual energético y servicial.
-                Tu trabajo es ayudar al usuario a navegar el menú.
-                
-                REGLAS:
-                1. NO inventes platos ni restaurantes. Usa la herramienta 'getMenuData' para saber qué existe.
-                2. Si llamas a una herramienta, usa la información que te devuelve para responder al usuario.
-                3. Sé breve. El usuario te está escuchando en una app móvil.
-                4. Si el usuario saluda, responde amablemente y ofrece mostrar los restaurantes.
-            `}] 
-        }
+    const chat = model.startChat({
+        history,
+        systemInstruction: { role: "system", parts: [{ text: SYSTEM_INSTRUCTION }] }
     });
 
     try {
-        const result = await chatSession.sendMessage(userMessage);
-        const response = result.response;
+        const result = await chat.sendMessage(userMessage);
+        const calls = result.response.functionCalls();
         
-        const candidates = response.candidates;
-        if (!candidates || candidates.length === 0) {
-             throw new Error("No se generaron candidatos de respuesta.");
-        }
-
-        const toolCalls = candidates[0].content.parts.filter(part => !!part.functionCall);
-
         let uiData = null;
-        let finalAiText = "";
+        let aiText = result.response.text();
 
-        if (toolCalls && toolCalls.length > 0) {
-            const call = toolCalls[0].functionCall;
-
-            if (call && call.name === "getMenuData" && call.args) {
-                const { queryType, parentId } = call.args as unknown as GetMenuDataArgs;
-
-                console.log(`🤖 AI Tool Call: ${queryType}, parent: ${parentId}`);
-
-                let items: GridItem[] = [];
-                if (queryType === 'restaurants') items = await repo.getRestaurants();
-                else if (queryType === 'categories' && parentId) items = await repo.getCategories(parentId);
-                else if (queryType === 'dishes' && parentId) items = await repo.getDishes(parentId);
-
-                uiData = {
-                    phase: queryType,
-                    items: items
-                };
+        if (calls) {
+            for (const call of calls) {
+                // Buscamos la herramienta MCP correspondiente
+                const tool = mcpTools.find(t => t.name === call.name);
                 
-                const toolResponsePart: Part = {
-                    functionResponse: {
-                        name: "getMenuData",
-                        response: { name: "getMenuData", content: { result: items } }
-                    }
-                };
+                if (tool) {
+                    console.log(`🔧 Ejecutando herramienta: ${tool.name}`, call.args);
+                    
+                    // Ejecutamos la lógica del "Handler"
+                    const executionResult = await tool.handler(call.args as any);
+                    
+                    // Actualizamos UI Data si la herramienta devolvió algo
+                    if (executionResult.uiData) uiData = executionResult.uiData;
 
-                const functionResponse = await chatSession.sendMessage([toolResponsePart]);
-                finalAiText = functionResponse.response.text();
+                    // Le damos el resultado a Gemini para que genere la respuesta final hablada
+                    const toolResponsePart = [{
+                        functionResponse: {
+                            name: call.name,
+                            response: { result: executionResult.textContext } 
+                        }
+                    }];
+                    
+                    const finalResponse = await chat.sendMessage(toolResponsePart);
+                    aiText = finalResponse.response.text();
+                }
             }
-        } else {
-            finalAiText = response.text();
         }
 
-        return {
-            aiMessage: finalAiText,
-            screenData: uiData
-        };
+        return { aiMessage: aiText, screenData: uiData as unknown as ChatResponse['screenData'] };
 
-    } catch (error) {
-        console.error("Error en AI Service:", error);
-        return {
-            aiMessage: "Lo siento, tuve un problema técnico. ¿Podrías repetirlo?",
-            screenData: null
-        };
+    } catch (e) {
+        console.error(e);
+        return { aiMessage: "Lo siento, hubo un error técnico.", screenData: null };
     }
 };
